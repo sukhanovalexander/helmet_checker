@@ -1,8 +1,3 @@
-"""
-/check_now command — immediately checks all of the user's watches
-and reports current status without waiting for the next scheduler tick.
-"""
-
 import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -19,18 +14,21 @@ async def handle_check_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("You have no active watches. Use /add to create one.")
         return
 
-    await update.message.reply_text("Checking now… ⏳")
+    await update.message.reply_text("Checking now... ")
 
     lines = []
     for w in watches:
         try:
             results = await asyncio.to_thread(check_availability, w["url"], w["libraries"])
         except Exception as e:
-            lines.append(f"❌ Watch #{w['id']}: error — {e}")
+            lines.append(f"Watch #{w['id']}: error - {e}")
             continue
 
-        for lib, available in results.items():
-            icon = "🟢" if available else "🔴"
-            lines.append(f"{icon} Watch #{w['id']} — {lib}")
+        for lib, info in results.items():
+            if info["available"]:
+                lines.append(f"[AVAILABLE] Watch #{w['id']} - {lib}")
+            else:
+                due = f", due {info['due_date']}" if info["due_date"] else ""
+                lines.append(f"[unavailable{due}] Watch #{w['id']} - {lib}")
 
     await update.message.reply_text("\n".join(lines) or "No results.")

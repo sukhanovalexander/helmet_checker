@@ -46,7 +46,7 @@ async def _poll_all(bot: Bot) -> None:
             logger.exception("Error checking watch #%d (%s)", watch["id"], watch["url"])
             continue
 
-        available_libs = [lib for lib, ok in results.items() if ok]
+        available_libs = [lib for lib, info in results.items() if info["available"]]
         if available_libs:
             await _notify(bot, watch, available_libs)
 

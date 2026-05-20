@@ -104,17 +104,17 @@ def fetch_libraries(url: str) -> list[str]:
 # 2. Check availability for scheduler / /check_now
 # ---------------------------------------------------------------------------
 
-def check_availability(url: str, libraries: list[str]) -> dict[str, bool]:
+def check_availability(url: str, libraries: list[str]) -> dict[str, dict]:
     """
-    Return {branch_name: is_available} for the requested branches.
+    Return {branch_name: {"available": bool, "due_date": str|None}}
 
-    is_available = True  →  heading contains span.status-available
-    is_available = False →  heading contains only span.status-unavailable
+    due_date is the text after "Lahin erapaiva" in the status span when
+    unavailable, e.g. "8.6.2026". None when available or no date shown.
     """
     tree = _fetch_holdings_tree(url)
     groups = tree.cssselect("div.holdings-group")
 
-    availability_map: dict[str, bool] = {}
+    availability_map: dict[str, dict] = {}
     for g in groups:
         name = _branch_name(g)
         if not name:
@@ -122,11 +122,30 @@ def check_availability(url: str, libraries: list[str]) -> dict[str, bool]:
         heading = g.cssselect("div.holdings-container-heading")
         if not heading:
             continue
-        available = bool(heading[0].cssselect("span.status-available"))
-        availability_map[name] = availability_map.get(name, False) or available
 
-    results: dict[str, bool] = {}
+        available = bool(heading[0].cssselect("span.status-available"))
+
+        due_date = None
+        if not available:
+            status_spans = heading[0].cssselect("span.status-unavailable")
+            for span in status_spans:
+                text = span.text_content().strip()
+                # "Lahin erapaiva 8.6.2026" or "Lahin erapaiva 8.6.2026"
+                import re
+                match = re.search(r"(\d{1,2}\.\d{1,2}\.\d{4})", text)
+                if match:
+                    due_date = match.group(1)
+                    break
+
+        # OR across copies: if any entry for this branch is available, mark available
+        existing = availability_map.get(name)
+        if existing is None:
+            availability_map[name] = {"available": available, "due_date": due_date}
+        elif available:
+            availability_map[name] = {"available": True, "due_date": None}
+
+    results: dict[str, dict] = {}
     for lib in libraries:
-        results[lib] = availability_map.get(lib, False)
+        results[lib] = availability_map.get(lib, {"available": False, "due_date": None})
 
     return results
