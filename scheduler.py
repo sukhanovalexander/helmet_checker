@@ -53,15 +53,36 @@ async def _poll_all(bot: Bot) -> None:
             if not info["available"] and lib in already_notified
         ]
 
-        # Re-arm: remove from notified if item went unavailable again
+        # Item went unavailable after we had notified — send update and re-arm
         if newly_unavailable:
             updated_notified = already_notified - set(newly_unavailable)
             set_notified(watch["id"], list(updated_notified))
+            await _notify_unavailable(bot, watch, newly_unavailable)
 
-        # Notify and record
+        # Item became available — notify once and record
         if newly_available:
             await _notify(bot, watch, newly_available)
             set_notified(watch["id"], list(already_notified | set(newly_available)))
+
+
+async def _notify_unavailable(bot: Bot, watch: dict, unavailable_libs: list[str]) -> None:
+    libs_text = "\n• ".join(unavailable_libs)
+    text = (
+        f"📕 *Item no longer available*\n\n"
+        f"Watch #{watch['id']} — the following librar{'y' if len(unavailable_libs) == 1 else 'ies'} "
+        f"no longer {'has' if len(unavailable_libs) == 1 else 'have'} it on the shelf:\n\n"
+        f"• {libs_text}\n\n"
+        f"🔗 {watch['url']}"
+    )
+    try:
+        await bot.send_message(
+            chat_id=watch["chat_id"],
+            text=text,
+            parse_mode="Markdown",
+        )
+        logger.info("Notified unavailable chat %d for watch #%d: %s", watch["chat_id"], watch["id"], unavailable_libs)
+    except Exception:
+        logger.exception("Failed to notify chat %d for watch #%d", watch["chat_id"], watch["id"])
 
 
 async def _notify(bot: Bot, watch: dict, available_libs: list[str]) -> None:
