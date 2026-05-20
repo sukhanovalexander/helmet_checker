@@ -1,4 +1,5 @@
 python-telegram-bot==21.*
 requests
 lxml
+cssselect
 python-dotenv

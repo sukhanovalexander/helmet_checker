@@ -1,105 +1,132 @@
 """
-Library page scraper.
+Helmet (helmet.finna.fi) availability scraper.
 
-Two responsibilities:
-1. fetch_libraries(url)  → list[str]
-   Parse the page and return all library names found in the availability table.
-   Used during /add so the user can pick which libraries to track.
+Uses the AjaxTab endpoint that the Finna frontend calls to load the holdings
+tab. Returns an HTML fragment — no JS rendering needed.
 
-2. check_availability(url, libraries) → dict[str, bool]
-   Return {library_name: is_available} for the requested libraries.
-   is_available = True means the item is ready to borrow (green status).
+Endpoint:
+  POST https://helmet.finna.fi/Record/<id>/AjaxTab
+  Body: tab=holdings
+  Headers: X-Requested-With: XMLHttpRequest  (required, else 403)
 
-Both functions are sync; call them from async code via asyncio.to_thread().
-
-TODO: fill in real XPaths / CSS selectors / regex patterns once the target
-      library system's markup is known.
+HTML structure of the response:
+  div.holdings-group                        — one per library branch
+    div.holdings-container-heading
+      div.location                          — branch name (after chevron icons)
+      div.holdings-details
+        span.status-available               — present if ≥1 copy available
+        span.status-unavailable             — present if all copies unavailable
 """
 
+import re
 import requests
 from lxml import html
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
+}
+
+# Shared session so cookies persist across requests (same session = no extra
+# redirects, and the site may set a session cookie on first load).
+_session = requests.Session()
+_session.headers.update(HEADERS)
+
 
 # ---------------------------------------------------------------------------
-# Shared fetch helper
+# URL → AjaxTab URL
 # ---------------------------------------------------------------------------
 
-def _fetch_tree(url: str) -> html.HtmlElement:
-    """Download page and return an lxml element tree."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (compatible; LibraryBot/1.0)"
-        )
-    }
-    resp = requests.get(url, headers=headers, timeout=15)
+def _ajax_url(page_url: str) -> str:
+    """
+    https://helmet.finna.fi/Record/helmet.2369709      →
+    https://helmet.finna.fi/Record/helmet.2369709/AjaxTab
+    """
+    return page_url.rstrip("/") + "/AjaxTab"
+
+
+# ---------------------------------------------------------------------------
+# Shared fetch
+# ---------------------------------------------------------------------------
+
+def _fetch_holdings_tree(page_url: str) -> html.HtmlElement:
+    resp = _session.post(
+        _ajax_url(page_url),
+        data={"tab": "holdings"},
+        timeout=15,
+    )
     resp.raise_for_status()
-    return html.fromstring(resp.content)
+    return html.fromstring(resp.text)
 
 
 # ---------------------------------------------------------------------------
-# 1. Discover libraries on the page
+# Helper: extract branch name from a holdings-group element
+# ---------------------------------------------------------------------------
+
+def _branch_name(group: html.HtmlElement) -> str:
+    """
+    The .location div contains icon <span>s followed by a text node with the
+    branch name, e.g. "  Lippulaiva aik  ". Strip and return it.
+    """
+    loc = group.cssselect("div.holdings-container-heading div.location")
+    if not loc:
+        return ""
+    # text_content() gives everything; we want only the trailing text node
+    # (after the icon spans). Grab all text nodes, take the last non-empty one.
+    texts = [t.strip() for t in loc[0].itertext() if t.strip()]
+    return texts[-1] if texts else ""
+
+
+# ---------------------------------------------------------------------------
+# 1. Discover libraries for /add
 # ---------------------------------------------------------------------------
 
 def fetch_libraries(url: str) -> list[str]:
     """
-    Return a list of library branch names found on the availability page.
-
-    TODO: replace the placeholder XPath below with the real one.
-    Example (generic): '//table[@class="availability"]//tr/td[1]/text()'
+    Return sorted list of branch names found in the holdings tab.
     """
-    tree = _fetch_tree(url)
-
-    # ---- PLACEHOLDER — replace with real XPath ----
-    LIBRARY_NAME_XPATH = "//TODO"
-    # -----------------------------------------------
-
-    names = tree.xpath(LIBRARY_NAME_XPATH)
-    return [n.strip() for n in names if n.strip()]
+    tree = _fetch_holdings_tree(url)
+    groups = tree.cssselect("div.holdings-group")
+    names = []
+    for g in groups:
+        name = _branch_name(g)
+        if name:
+            names.append(name)
+    return sorted(set(names))
 
 
 # ---------------------------------------------------------------------------
-# 2. Check availability for selected libraries
+# 2. Check availability for scheduler / /check_now
 # ---------------------------------------------------------------------------
 
 def check_availability(url: str, libraries: list[str]) -> dict[str, bool]:
     """
-    Return {library_name: is_available} for each library in *libraries*.
+    Return {branch_name: is_available} for the requested branches.
 
-    is_available is True when the status cell contains a green/available
-    indicator (exact check defined by STATUS_AVAILABLE_PATTERN below).
-
-    TODO: replace XPaths and the status pattern with real values.
+    is_available = True  →  heading contains span.status-available
+    is_available = False →  heading contains only span.status-unavailable
     """
-    tree = _fetch_tree(url)
+    tree = _fetch_holdings_tree(url)
+    groups = tree.cssselect("div.holdings-group")
 
-    # ---- PLACEHOLDER — replace with real XPaths / patterns ----
-    # XPath that, given a library name, finds its status cell text.
-    # Many library systems use a <tr> per branch; adapt as needed.
-    ROW_XPATH = "//TODO/tr"          # XPath to each availability row
-    LIBRARY_CELL_INDEX = 0           # column index of the branch name
-    STATUS_CELL_INDEX  = 1           # column index of the status text/class
-
-    # Text or class value that means "available now"
-    STATUS_AVAILABLE_PATTERN = "TODO_available_keyword"
-    # ------------------------------------------------------------
+    availability_map: dict[str, bool] = {}
+    for g in groups:
+        name = _branch_name(g)
+        if not name:
+            continue
+        heading = g.cssselect("div.holdings-container-heading")
+        if not heading:
+            continue
+        available = bool(heading[0].cssselect("span.status-available"))
+        availability_map[name] = availability_map.get(name, False) or available
 
     results: dict[str, bool] = {}
-    rows = tree.xpath(ROW_XPATH)
-
-    for row in rows:
-        cells = row.xpath(".//td")
-        if len(cells) <= max(LIBRARY_CELL_INDEX, STATUS_CELL_INDEX):
-            continue
-
-        branch = cells[LIBRARY_CELL_INDEX].text_content().strip()
-        if branch not in libraries:
-            continue
-
-        status_text = cells[STATUS_CELL_INDEX].text_content().strip()
-        results[branch] = STATUS_AVAILABLE_PATTERN in status_text
-
-    # Any tracked library not found on page → treat as unavailable
     for lib in libraries:
-        results.setdefault(lib, False)
+        results[lib] = availability_map.get(lib, False)
 
     return results
