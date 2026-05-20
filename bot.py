@@ -20,8 +20,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+async def post_init(app: Application) -> None:
+    """Called by PTB after the event loop is running — safe place to spawn tasks."""
+    asyncio.create_task(run_scheduler(app.bot))
+    logger.info("Scheduler started")
+
+
+def main():
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     # Command handlers
     app.add_handler(CommandHandler("add", handle_add))
@@ -33,12 +44,9 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_library_selection, pattern=r"^lib_confirm:"))
     app.add_handler(CallbackQueryHandler(handle_delete_selection, pattern=r"^del_confirm:"))
 
-    # Start background scheduler as a concurrent task
-    asyncio.create_task(run_scheduler(app.bot))
-
     logger.info("Bot started")
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

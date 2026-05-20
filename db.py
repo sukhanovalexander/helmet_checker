@@ -1,3 +1,4 @@
+import os
 """
 Thin SQLite persistence layer.
 
@@ -28,6 +29,7 @@ def _connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     """Create tables if they don't exist. Call once at startup."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with _connect() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watches (
