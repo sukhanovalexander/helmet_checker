@@ -33,14 +33,20 @@ def init_db() -> None:
     with _connect() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watches (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id     INTEGER NOT NULL,
-                url         TEXT    NOT NULL,
-                libraries   TEXT    NOT NULL,  -- JSON list
-                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id             INTEGER NOT NULL,
+                url                 TEXT    NOT NULL,
+                libraries           TEXT    NOT NULL,  -- JSON list
+                notified_libraries  TEXT    NOT NULL DEFAULT '[]',  -- JSON list of libs already notified
+                created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
         conn.commit()
+        # Migration: add notified_libraries column if it doesn't exist yet
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(watches)").fetchall()]
+        if "notified_libraries" not in cols:
+            conn.execute("ALTER TABLE watches ADD COLUMN notified_libraries TEXT NOT NULL DEFAULT '[]'")
+            conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +73,26 @@ def delete_watch(watch_id: int, chat_id: int) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+def set_notified(watch_id: int, libraries: list[str]) -> None:
+    """Mark these libraries as already notified for this watch."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE watches SET notified_libraries = ? WHERE id = ?",
+            (json.dumps(libraries), watch_id),
+        )
+        conn.commit()
+
+
+def clear_notified(watch_id: int) -> None:
+    """Clear notified state (e.g. item went unavailable again)."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE watches SET notified_libraries = '[]' WHERE id = ?",
+            (watch_id,),
+        )
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -103,4 +129,5 @@ def get_watch(watch_id: int) -> Optional[dict]:
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["libraries"] = json.loads(d["libraries"])
+    d["notified_libraries"] = json.loads(d.get("notified_libraries") or "[]")
     return d

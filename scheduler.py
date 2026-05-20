@@ -1,14 +1,11 @@
 """
 Background scheduler.
 
-Runs an infinite loop; every POLL_INTERVAL_SECONDS seconds it:
-  1. Loads all watches from the DB
-  2. Checks availability for each
-  3. Sends a Telegram notification for any library that just became available
-
-Note: this simple implementation does NOT deduplicate notifications between
-runs. If you want to alert only once (until the item goes unavailable again),
-add a `last_notified_at` column or a small in-memory set.
+Notification logic:
+- When a library becomes available, notify once and record it in notified_libraries.
+- Skip subsequent polls for already-notified libraries.
+- If a library goes unavailable again, clear it from notified_libraries so it
+  can trigger a new notification next time it becomes available.
 """
 
 import asyncio
@@ -17,14 +14,13 @@ import logging
 from telegram import Bot
 
 from config import POLL_INTERVAL_SECONDS
-from db import init_db, get_all_watches
+from db import init_db, get_all_watches, set_notified, clear_notified
 from scrapers.library import check_availability
 
 logger = logging.getLogger(__name__)
 
 
 async def run_scheduler(bot: Bot) -> None:
-    """Entry point — call as an asyncio task from bot.py."""
     init_db()
     logger.info("Scheduler started; polling every %ds", POLL_INTERVAL_SECONDS)
 
@@ -46,9 +42,26 @@ async def _poll_all(bot: Bot) -> None:
             logger.exception("Error checking watch #%d (%s)", watch["id"], watch["url"])
             continue
 
-        available_libs = [lib for lib, info in results.items() if info["available"]]
-        if available_libs:
-            await _notify(bot, watch, available_libs)
+        already_notified = set(watch["notified_libraries"])
+
+        newly_available = [
+            lib for lib, info in results.items()
+            if info["available"] and lib not in already_notified
+        ]
+        newly_unavailable = [
+            lib for lib, info in results.items()
+            if not info["available"] and lib in already_notified
+        ]
+
+        # Re-arm: remove from notified if item went unavailable again
+        if newly_unavailable:
+            updated_notified = already_notified - set(newly_unavailable)
+            set_notified(watch["id"], list(updated_notified))
+
+        # Notify and record
+        if newly_available:
+            await _notify(bot, watch, newly_available)
+            set_notified(watch["id"], list(already_notified | set(newly_available)))
 
 
 async def _notify(bot: Bot, watch: dict, available_libs: list[str]) -> None:
@@ -66,5 +79,6 @@ async def _notify(bot: Bot, watch: dict, available_libs: list[str]) -> None:
             text=text,
             parse_mode="Markdown",
         )
+        logger.info("Notified chat %d for watch #%d: %s", watch["chat_id"], watch["id"], available_libs)
     except Exception:
         logger.exception("Failed to notify chat %d for watch #%d", watch["chat_id"], watch["id"])
